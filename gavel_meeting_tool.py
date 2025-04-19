@@ -160,7 +160,7 @@ def extract_bills_from_slices(meeting):
     
     return bills
 
-def build_description(meeting):
+def build_description(meeting, include_streaming=True):
     """Build a description from the meeting slices and bills"""
     description_parts = []
     
@@ -182,6 +182,10 @@ def build_description(meeting):
         if not highlight_text:
             continue
         
+        # Skip streaming info if not wanted
+        if not include_streaming and "Streamed live on AKL.tv" in highlight_text:
+            continue
+            
         # Skip "MEETING CANCELED" if we already added it
         if "CANCELED" in highlight_text.upper() and len(description_parts) > 0 and "CANCELED" in description_parts[0]:
             continue
