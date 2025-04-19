@@ -654,8 +654,8 @@ def format_meetings_csv(meetings, include_date=False):
         bills = extract_bills_from_slices(meeting)
         bills_str = ", ".join(bills) if bills else ""
         
-        # Build description
-        description = build_description(meeting)
+        # Build description without streaming info
+        description = build_description(meeting, include_streaming=False)
         
         # Build row
         row = [title, status, location, formatted_time, bills_str, description]
@@ -715,8 +715,8 @@ def format_meetings_invintus_csv(meetings, encoders, categories, runtime="01:00"
         
         # 3. startDateTime already formatted above
         
-        # 4. Description
-        description = build_description(meeting)
+        # 4. Description - Remove "Streamed live on AKL.tv" for CSV exports
+        description = build_description(meeting, include_streaming=False)
         
         # 5. encoder (using selected encoder)
         encoder = encoders[custom_id]
