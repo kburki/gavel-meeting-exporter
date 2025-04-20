@@ -140,6 +140,28 @@ def build_title(meeting):
         return f"{chamber} Finance: {committee} Subcommittee"
     
     return title.title()
+    
+def format_short_date(date_str):
+    """Format date string to 'MM/DD/YY'"""
+    try:
+        # Parse the date (assuming MM/DD/YYYY format)
+        date_obj = datetime.datetime.strptime(date_str, "%m/%d/%Y")
+        # Format with shorter year
+        return date_obj.strftime("%m/%d/%y")
+    except ValueError:
+        # Return original if there's an issue
+        return date_str
+    
+def format_date_with_day(date_str):
+    """Format date string with day of week: 'Tuesday April 22, 2025'"""
+    try:
+        # Parse the date (assuming MM/DD/YYYY format)
+        date_obj = datetime.datetime.strptime(date_str, "%m/%d/%Y")
+        # Format with day of week
+        return date_obj.strftime("%A %B %d, %Y")
+    except ValueError:
+        # Return original if there's an issue
+        return date_str
 
 def extract_bills_with_details(meeting):
     """Extract bills with their related details from meeting slices"""
@@ -384,10 +406,13 @@ def render_meetings_html(meetings, date_info, is_range=False):
         return f"<h1>Error</h1><p>{meetings['error']}</p>"
     
     if is_range:
-        title = f"Gavel Meeting Exporter - {date_info['start']} to {date_info['end']}"
+        start_formatted = format_date_with_day(date_info['start'])
+        end_formatted = format_date_with_day(date_info['end'])
+        title = f"Gavel Meeting Exporter - {start_formatted} to {end_formatted}"
     else:
-        title = f"Gavel Meeting Exporter - {date_info}"
-    
+        formatted_date = format_date_with_day(date_info)
+        title = f"Gavel Meeting Exporter - {formatted_date}"    
+        
     # Prepare meetings by date for display
     meetings_by_date = {}
     if is_range:
@@ -472,15 +497,17 @@ def render_meetings_html(meetings, date_info, is_range=False):
     # For each date, create a table
     for date in sorted(meetings_by_date.keys()):
         date_meetings = meetings_by_date[date]
-        
-        # Add date header
-        html += f'<h3 class="date-header">Meetings for {date}</h3>'
-        
+    
+        # Add date header - CHANGE THIS LINE
+        formatted_date = format_date_with_day(date)
+        html += f'<h3 class="date-header">Meetings for {formatted_date}</h3>'
+    
         # Add table for this date
         html += """
         <table>
             <tr>
                 <th>Select</th>
+                <th>Date</th>
                 <th>Title</th>
                 <th>Status</th>
                 <th>Location</th>
@@ -533,7 +560,10 @@ def render_meetings_html(meetings, date_info, is_range=False):
                     onchange="toggleEncoder(this)">
             </td>
             """
-            
+
+            # Date column - this is new
+            html += f"<td>{format_short_date(date)}</td>"
+
             # Other columns
             html += f"<td>{title}</td>"
             html += f"<td>{status}</td>"
