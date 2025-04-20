@@ -587,85 +587,97 @@ def render_meetings_html(meetings, date_info, is_range=False):
     </div>
     </form>
     
+    // Replace the entire script section in your render_meetings_html function with this:
+
     <script>
-    function selectAll() {
-        var checkboxes = document.querySelectorAll('input[name="selected_meetings"]');
-        checkboxes.forEach(function(checkbox) {
-            checkbox.checked = true;
-            toggleEncoder(checkbox);
-        });
+function selectAll() {
+    var checkboxes = document.querySelectorAll('input[name="selected_meetings"]');
+    checkboxes.forEach(function(checkbox) {
+        checkbox.checked = true;
+        toggleEncoder(checkbox);
+    });
+}
+
+function deselectAll() {
+    var checkboxes = document.querySelectorAll('input[name="selected_meetings"]');
+    checkboxes.forEach(function(checkbox) {
+        checkbox.checked = false;
+        toggleEncoder(checkbox);
+    });
+}
+
+function toggleEncoder(checkbox) {
+    var meetingId = checkbox.getAttribute('data-meeting-id');
+    var encoderSelect = document.getElementById('encoder-' + meetingId);
+    
+    if (checkbox.checked) {
+        encoderSelect.classList.add('active');
+        
+        // Set default category as "Gavel Alaska, [Title]"
+        var title = checkbox.getAttribute('data-title');
+        var meetingValue = checkbox.value;
+        var hiddenInput = document.getElementById('category-' + meetingValue);
+        
+        if (!hiddenInput) {
+            hiddenInput = document.createElement('input');
+            hiddenInput.type = 'hidden';
+            hiddenInput.name = 'category_' + meetingValue;
+            hiddenInput.id = 'category-' + meetingValue;
+            document.getElementById('invintus-form').appendChild(hiddenInput);
+        }
+        
+        hiddenInput.value = 'Gavel Alaska, ' + title;
+    } else {
+        encoderSelect.classList.remove('active');
+        encoderSelect.value = '';
+        
+        // Remove category hidden input
+        var meetingValue = checkbox.value;
+        var hiddenInput = document.getElementById('category-' + meetingValue);
+        if (hiddenInput) {
+            hiddenInput.parentNode.removeChild(hiddenInput);
+        }
+    }
+}
+
+document.getElementById('invintus-form').onsubmit = function(e) {
+    var checkboxes = document.querySelectorAll('input[name="selected_meetings"]:checked');
+    if (checkboxes.length === 0) {
+        alert('Please select at least one meeting to export.');
+        e.preventDefault();
+        return false;
     }
     
-    function deselectAll() {
-        var checkboxes = document.querySelectorAll('input[name="selected_meetings"]');
-        checkboxes.forEach(function(checkbox) {
-            checkbox.checked = false;
-            toggleEncoder(checkbox);
-        });
-    }
+    // Check if any selected meetings don't have encoders
+    var missingEncoders = false;
+    var encoderSelects = [];
     
-    function toggleEncoder(checkbox) {
+    checkboxes.forEach(function(checkbox) {
         var meetingId = checkbox.getAttribute('data-meeting-id');
         var encoderSelect = document.getElementById('encoder-' + meetingId);
         
-        if (checkbox.checked) {
-            encoderSelect.classList.add('active');
-            
-            // Set default category as "Gavel Alaska, [Title]"
-            var title = checkbox.getAttribute('data-title');
-            var meetingValue = checkbox.value;
-            var hiddenInput = document.getElementById('category-' + meetingValue);
-            
-            if (!hiddenInput) {
-                hiddenInput = document.createElement('input');
-                hiddenInput.type = 'hidden';
-                hiddenInput.name = 'category_' + meetingValue;
-                hiddenInput.id = 'category-' + meetingValue;
-                document.getElementById('invintus-form').appendChild(hiddenInput);
-            }
-            
-            hiddenInput.value = 'Gavel Alaska, ' + title;
-        } else {
-            encoderSelect.classList.remove('active');
-            encoderSelect.value = '';
-            
-            // Remove category hidden input
-            var meetingValue = checkbox.value;
-            var hiddenInput = document.getElementById('category-' + meetingValue);
-            if (hiddenInput) {
-                hiddenInput.parentNode.removeChild(hiddenInput);
-            }
+        if (!encoderSelect.value) {
+            missingEncoders = true;
+            encoderSelects.push(encoderSelect);
+        }
+    });
+    
+    // If some encoders are missing, show a warning but allow continuing
+    if (missingEncoders) {
+        // Highlight the missing encoders
+        encoderSelects.forEach(function(select) {
+            select.style.border = '2px solid orange';
+        });
+        
+        // Ask for confirmation
+        if (!confirm('Some meetings are missing encoder selections. These will be exported with blank encoder values. Continue?')) {
+            e.preventDefault();
+            return false;
         }
     }
     
-    document.getElementById('invintus-form').onsubmit = function(e) {
-        var checkboxes = document.querySelectorAll('input[name="selected_meetings"]:checked');
-        if (checkboxes.length === 0) {
-            alert('Please select at least one meeting to export.');
-            e.preventDefault();
-            return false;
-        }
-        
-        // Validate that all selected meetings have encoders
-        var valid = true;
-        checkboxes.forEach(function(checkbox) {
-            var meetingId = checkbox.getAttribute('data-meeting-id');
-            var encoderSelect = document.getElementById('encoder-' + meetingId);
-            
-            if (!encoderSelect.value) {
-                valid = false;
-                encoderSelect.style.border = '2px solid red';
-            }
-        });
-        
-        if (!valid) {
-            alert('Please select an encoder for each selected meeting.');
-            e.preventDefault();
-            return false;
-        }
-        
-        return true;
-    };
+    return true;
+};
     </script>
     </body>
     </html>
@@ -738,6 +750,14 @@ def format_meetings_invintus_csv(meetings, encoders, categories, runtime="01:00"
     # Write header according to Invintus spec
     writer.writerow(["title", "customID", "startDateTime", "description", "encoder", "category", "location", "estRuntime", "liveToBreak"])
     
+def format_meetings_invintus_csv(meetings, encoders, categories, runtime="01:00", live_to_break=True):
+    """Format meetings for Invintus CSV export"""
+    output = StringIO()
+    writer = csv.writer(output, quoting=csv.QUOTE_ALL)
+    
+    # Write header according to Invintus spec
+    writer.writerow(["title", "customID", "startDateTime", "description", "encoder", "category", "location", "estRuntime", "liveToBreak"])
+    
     # Set default values
     live_to_break_value = "TRUE" if live_to_break else "FALSE"
     
@@ -769,17 +789,17 @@ def format_meetings_invintus_csv(meetings, encoders, categories, runtime="01:00"
         # 2. customID (no whitespace)
         custom_id = generate_custom_id(meeting)
         
-        # Skip if no encoder selected
-        if custom_id not in encoders or not encoders[custom_id]:
-            continue
+        # Include all selected meetings, even if no encoder is set
+        if custom_id not in encoders:
+            continue  # Skip unselected meetings
         
         # 3. startDateTime already formatted above
         
         # 4. Description - use for_csv=True to exclude streaming info
         description = build_description(meeting, for_csv=True)
         
-        # 5. encoder (using selected encoder)
-        encoder = encoders[custom_id]
+        # 5. encoder (using selected encoder or empty string if none)
+        encoder = encoders[custom_id] if encoders[custom_id] else ""
         
         # 6. category (using custom category for each meeting)
         category = categories.get(custom_id, "Gavel Alaska")
