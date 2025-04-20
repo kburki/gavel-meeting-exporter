@@ -59,7 +59,7 @@ This tool streamlines the workflow for broadcasting legislative meetings by prov
 
 2. Access the web interface in your browser:
    ```
-   http://localhost:5028
+   http://localhost:5027
    ```
 
 3. Select a date or date range to view meetings
