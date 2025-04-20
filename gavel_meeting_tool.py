@@ -150,6 +150,9 @@ def extract_bills_with_details(meeting):
     current_bill = None
     current_details = []
     
+    # Track what details we've already added to avoid duplicates
+    used_details = set()
+    
     for slice in meeting_slices:
         bill_root = slice.get("BillRoot", "")
         highlight_text = slice.get("SliceHighliteText", "")
@@ -169,29 +172,37 @@ def extract_bills_with_details(meeting):
             current_details = []
         
         # Add highlight text as a detail for the current bill
-        if highlight_text and "MEETING CANCELED" not in highlight_text.upper():
+        if current_bill and highlight_text and "MEETING CANCELED" not in highlight_text.upper():
             # Don't add the bill itself as a detail
             if not (bill_root and bill_root == highlight_text):
+                # Remember we've used this detail with a bill
+                used_details.add(highlight_text)
                 current_details.append(highlight_text)
     
     # Add the last bill group if it exists
     if current_bill and current_details:
         bill_details.append({"bill": current_bill, "details": current_details})
     
-    # Find slices with no bill but with highlight text
+    # Find slices with no bill but with highlight text that hasn't been used with a bill
     general_items = []
     for slice in meeting_slices:
         bill_root = slice.get("BillRoot", "")
         highlight_text = slice.get("SliceHighliteText", "")
         
         if not bill_root and highlight_text and "MEETING CANCELED" not in highlight_text.upper():
-            if highlight_text not in general_items:
+            # Only add items that weren't already associated with a bill
+            if highlight_text not in used_details and highlight_text not in general_items:
                 general_items.append(highlight_text)
     
     return bill_details, general_items
 
-def build_description(meeting):
-    """Build a description from the meeting slices and bills with their details"""
+def build_description(meeting, for_csv=False):
+    """Build a description from the meeting slices and bills with their details
+    
+    Args:
+        meeting: The meeting data
+        for_csv: If True, excludes stream info from the description
+    """
     description_parts = []
     
     # Check if meeting is canceled
@@ -209,8 +220,21 @@ def build_description(meeting):
             details = item["details"]
             
             if details:
-                # Combine bill with its details
-                bill_text = f"{bill} {' '.join(details)}"
+                # Get the short title for the bill if available
+                short_title = ""
+                for slice in meeting.get("MeetingSlices", []):
+                    if slice.get("BillRoot") == bill and "ShortTitle" in slice:
+                        short_title = slice.get("ShortTitle", "")
+                        break
+                
+                # Use short title if available, otherwise just use bill number
+                if short_title:
+                    bill_text = f"{bill} {short_title}"
+                else:
+                    bill_text = bill
+                
+                # Add details after the bill
+                bill_text += " " + " ".join(details)
             else:
                 bill_text = bill
                 
@@ -222,7 +246,19 @@ def build_description(meeting):
     if general_items:
         description_parts.append(" | ".join(general_items))
     
-    return " | ".join(description_parts)
+    # Build the full description
+    description = " | ".join(description_parts)
+    
+    # Remove streaming info for CSV exports if needed
+    if for_csv:
+        description = description.replace("**Streamed live on AKL.tv**", "").replace(" |  | ", " | ").strip()
+        # Clean up any trailing or double separators after removing streaming info
+        while " | |" in description:
+            description = description.replace(" | |", " |")
+        if description.endswith(" | "):
+            description = description[:-3]
+    
+    return description
 
 def should_skip_event(meeting):
     """Determine if a meeting should be skipped"""
@@ -478,7 +514,7 @@ def render_meetings_html(meetings, date_info, is_range=False):
             bill_details, _ = extract_bills_with_details(meeting)
             bills_str = ", ".join([item["bill"] for item in bill_details]) if bill_details else "None"
             
-            # Get description
+            # Get description (keep streaming info for HTML display)
             description = build_description(meeting)
             
             # Generate custom ID for this meeting
@@ -678,8 +714,8 @@ def format_meetings_csv(meetings, include_date=False):
         bill_details, _ = extract_bills_with_details(meeting)
         bills_str = ", ".join([item["bill"] for item in bill_details]) if bill_details else ""
         
-        # Build description
-        description = build_description(meeting)
+        # Build description for CSV export (exclude streaming info)
+        description = build_description(meeting, for_csv=True)
         
         # Build row
         row = [title, status, location, formatted_time, bills_str, description]
@@ -739,8 +775,8 @@ def format_meetings_invintus_csv(meetings, encoders, categories, runtime="01:00"
         
         # 3. startDateTime already formatted above
         
-        # 4. Description
-        description = build_description(meeting)
+        # 4. Description - use for_csv=True to exclude streaming info
+        description = build_description(meeting, for_csv=True)
         
         # 5. encoder (using selected encoder)
         encoder = encoders[custom_id]
