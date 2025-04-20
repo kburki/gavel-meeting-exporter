@@ -940,63 +940,240 @@ def format_meetings_csv(meetings, include_date=False):
     
     return output.getvalue()
 
-def format_meetings_invintus_csv(meetings, encoders, categories, runtime="01:00", live_to_break=True):
-    """Format meetings for Invintus CSV export"""
-    output = StringIO()
-    writer = csv.writer(output, quoting=csv.QUOTE_ALL)
+def format_meetings_invintus_csv
+
+# Flask routes
+@app.route('/')
+def index():
+    """Main page with date selection"""
+    return render_index_html()
+
+@app.route('/view')
+def view_meetings():
+    """View meetings for a single date"""
+    date = request.args.get('date', datetime.datetime.now().strftime("%m/%d/%Y"))
     
-    # Write header according to Invintus spec
-    writer.writerow(["title", "customID", "startDateTime", "description", "encoder", "category", "location", "estRuntime", "liveToBreak"])
+    # Get meetings
+    meetings_data = get_meetings(date)
     
-    # Set default values
-    live_to_break_value = "TRUE" if live_to_break else "FALSE"
+    # Render HTML
+    return render_meetings_html(meetings_data, date)
+
+@app.route('/view_range')
+def view_range():
+    """View meetings for a date range"""
+    start_date = request.args.get('start_date', datetime.datetime.now().strftime("%m/%d/%Y"))
+    end_date = request.args.get('end_date', (datetime.datetime.now() + datetime.timedelta(days=1)).strftime("%m/%d/%Y"))
     
-    # Process each meeting
-    for meeting in meetings:
-        # Skip meetings that should be excluded
-        if should_skip_event(meeting):
-            continue
+    # Get meetings for the date range
+    meetings_by_date = get_meeting_range(start_date, end_date)
+    
+    # Render HTML
+    date_info = {'start': start_date, 'end': end_date}
+    return render_meetings_html(meetings_by_date, date_info, True)
+
+@app.route('/export_csv')
+def export_csv():
+    """Export meetings for a single date as CSV"""
+    date = request.args.get('date', datetime.datetime.now().strftime("%m/%d/%Y"))
+    
+    # Get meetings
+    meetings_data = get_meetings(date)
+    
+    if isinstance(meetings_data, dict) and "error" in meetings_data:
+        return f"Error: {meetings_data['error']}"
+    
+    # Format as CSV
+    csv_data = format_meetings_csv(meetings_data)
+    
+    # Return as downloadable file
+    return Response(
+        csv_data,
+        mimetype="text/csv",
+        headers={"Content-disposition": f"attachment; filename=meetings_{date.replace('/', '-')}.csv"}
+    )
+
+@app.route('/export_csv_range')
+def export_csv_range():
+    """Export meetings for a date range as CSV"""
+    date = request.args.get('date', "")
+    
+    if " to " in date:
+        start_date, end_date = date.split(" to ")
+    else:
+        start_date = end_date = date
+    
+    # If we have a single date, use the export_csv endpoint
+    if start_date == end_date:
+        return export_csv()
+    
+    # Get meetings for the date range
+    meetings_by_date = get_meeting_range(start_date, end_date)
+    
+    if isinstance(meetings_by_date, dict) and "error" in meetings_by_date:
+        return f"Error: {meetings_by_date['error']}"
+    
+    # Flatten meetings for CSV export
+    all_meetings = []
+    for date, meetings in meetings_by_date.items():
+        if isinstance(meetings, list):
+            for meeting in meetings:
+                # Add date info to each meeting
+                meeting['_display_date'] = date
+                all_meetings.append(meeting)
+    
+    # Format as CSV with date column
+    csv_data = format_meetings_csv(all_meetings, True)
+    
+    # Return as downloadable file
+    return Response(
+        csv_data,
+        mimetype="text/csv",
+        headers={"Content-disposition": f"attachment; filename=meetings_{start_date.replace('/', '-')}_to_{end_date.replace('/', '-')}.csv"}
+    )
+
+@app.route('/export_invintus', methods=['POST'])
+def export_invintus():
+    """Export selected meetings to Invintus CSV format"""
+    date_info = request.form.get('date_info', '')
+    selected_meetings = request.form.getlist('selected_meetings')
+    runtime = request.form.get('runtime', '01:00')
+    live_to_break = 'live_to_break' in request.form
+    
+    if not selected_meetings:
+        return "Error: No meetings selected. Please go back and select at least one meeting."
+    
+    # Get meetings
+    meetings_data = get_meetings(date_info)
+    
+    if isinstance(meetings_data, dict) and "error" in meetings_data:
+        return f"Error: {meetings_data['error']}"
+    
+    # Get encoders and categories for each meeting
+    encoders = {}
+    categories = {}
+    
+    for meeting_id in selected_meetings:
+        # Get encoder
+        encoder_key = f"encoder_{meeting_id}"
+        if encoder_key in request.form and request.form[encoder_key]:
+            encoders[meeting_id] = request.form[encoder_key]
         
-        # Parse date/time
-        date_str = meeting.get("MeetingDate", "")
-        time_str = meeting.get("MeetingTime", "")
-        
-        if not date_str or not time_str:
-            continue
-        
-        try:
-            # Format datetime in the required format: YYYY-MM-DD HH:mm:ss
-            dt = datetime.datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M:%S")
-            start_datetime = dt.strftime("%Y-%m-%d %H:%M:%S")
-        except ValueError:
-            continue
-        
-        # Build meeting data for CSV
-        
-        # 1. Title
-        title = build_title(meeting)
-        
-        # 2. customID (no whitespace)
+        # Get category
+        category_key = f"category_{meeting_id}"
+        if category_key in request.form and request.form[category_key]:
+            categories[meeting_id] = request.form[category_key]
+    
+    # Filter to only selected meetings
+    filtered_meetings = []
+    
+    for meeting in meetings_data:
         custom_id = generate_custom_id(meeting)
+        if custom_id in selected_meetings:
+            filtered_meetings.append(meeting)
+    
+    # Generate Invintus CSV
+    csv_data = format_meetings_invintus_csv(
+        filtered_meetings,
+        encoders=encoders,
+        categories=categories,
+        runtime=runtime,
+        live_to_break=live_to_break
+    )
+    
+    # Return as downloadable file
+    return Response(
+        csv_data,
+        mimetype="text/csv",
+        headers={"Content-disposition": f"attachment; filename=invintus_meetings_{date_info.replace('/', '-')}.csv"}
+    )
+
+@app.route('/export_invintus_range', methods=['POST'])
+def export_invintus_range():
+    """Export selected meetings from a date range to Invintus CSV format"""
+    date_info = request.form.get('date_info', '')
+    selected_meetings = request.form.getlist('selected_meetings')
+    runtime = request.form.get('runtime', '01:00')
+    live_to_break = 'live_to_break' in request.form
+    
+    if not selected_meetings:
+        return "Error: No meetings selected. Please go back and select at least one meeting."
+    
+    # Parse date range
+    if " to " in date_info:
+        start_date, end_date = date_info.split(" to ")
+    else:
+        start_date = end_date = date_info
+    
+    # Get encoders and categories for each meeting
+    encoders = {}
+    categories = {}
+    
+    for meeting_id in selected_meetings:
+        # Get encoder
+        encoder_key = f"encoder_{meeting_id}"
+        if encoder_key in request.form and request.form[encoder_key]:
+            encoders[meeting_id] = request.form[encoder_key]
         
-        # Skip if no encoder selected
-        if custom_id not in encoders or not encoders[custom_id]:
-            continue
+        # Get category
+        category_key = f"category_{meeting_id}"
+        if category_key in request.form and request.form[category_key]:
+            categories[meeting_id] = request.form[category_key]
+    
+    # Get meetings
+    if start_date == end_date:
+        meetings_data = get_meetings(start_date)
+        if isinstance(meetings_data, dict) and "error" in meetings_data:
+            return f"Error: {meetings_data['error']}"
+        all_meetings = meetings_data
+    else:
+        meetings_by_date = get_meeting_range(start_date, end_date)
+        if isinstance(meetings_by_date, dict) and "error" in meetings_by_date:
+            return f"Error: {meetings_by_date['error']}"
         
-        # 3. startDateTime already formatted above
-        
-        # 4. Description
-        description = build_description(meeting)
-        
-        # 5. encoder (using selected encoder)
-        encoder = encoders[custom_id]
-        
-        # 6. category (using custom category for each meeting)
-        category = categories.get(custom_id, "Gavel Alaska")
-        
-        # 7. location
-        location = meeting.get("Location", "")
-        
-        # Write row with all fields
-        writer.writerow([
-            title
+        # Flatten meetings
+        all_meetings = []
+        for date, meetings in meetings_by_date.items():
+            if isinstance(meetings, list):
+                all_meetings.extend(meetings)
+    
+    # Filter to only selected meetings
+    filtered_meetings = []
+    
+    for meeting in all_meetings:
+        custom_id = generate_custom_id(meeting)
+        if custom_id in selected_meetings:
+            filtered_meetings.append(meeting)
+    
+    # Generate Invintus CSV
+    csv_data = format_meetings_invintus_csv(
+        filtered_meetings,
+        encoders=encoders,
+        categories=categories,
+        runtime=runtime,
+        live_to_break=live_to_break
+    )
+    
+    # Return as downloadable file
+    filename = f"invintus_meetings_{start_date.replace('/', '-')}"
+    if start_date != end_date:
+        filename += f"_to_{end_date.replace('/', '-')}"
+    
+    return Response(
+        csv_data,
+        mimetype="text/csv",
+        headers={"Content-disposition": f"attachment; filename={filename}.csv"}
+    )
+
+if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Gavel Meeting Exporter')
+    parser.add_argument('--port', type=int, default=5027,
+                        help='Port to run the web server on (default: 5027)')
+    
+    args = parser.parse_args()
+    
+    print(f"Starting web server on port {args.port}...")
+    print(f"Access the web interface at http://localhost:{args.port}/")
+    app.run(host='0.0.0.0', port=args.port)
