@@ -655,7 +655,7 @@ def render_meetings_html(meetings, date_info, is_range=False):
 
         <div class="form-row checkbox-row">
             <label>
-                <input type="checkbox" id="live_to_break" name="live_to_break" value="TRUE" checked>
+                <input type="checkbox" id="live_to_break" name="live_to_break" value="TRUE">
                 Live To Break
             </label>
         </div>
