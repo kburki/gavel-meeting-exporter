@@ -19,7 +19,10 @@ import re
 import sys
 import os
 from io import StringIO
-from flask import Flask, request, Response, render_template_string
+import hmac
+import time
+from flask import Flask, request, Response, render_template_string, session, redirect
+from werkzeug.security import check_password_hash, generate_password_hash
 
 # Configuration
 API_BASE_URL = "http://www.akleg.gov/publicservice/basis/"
@@ -37,6 +40,118 @@ TELECONFERENCE_PATTERN = re.compile(
 
 # Flask app setup
 app = Flask(__name__)
+
+# ---------------------------------------------------------------------------
+# Login
+#
+# Credentials are never stored in this file. They are read from a .env file
+# next to this script (keep it out of git and chmod 600):
+#
+#   GAVEL_USERNAME=someuser
+#   GAVEL_PASSWORD_HASH=<output of: python3 gavel_meeting_tool.py --hash-password>
+#   GAVEL_SECRET_KEY=<any long random string, e.g. python3 -c "import secrets; print(secrets.token_hex(32))">
+#
+# The app refuses to start if any of these are missing.
+# ---------------------------------------------------------------------------
+
+def load_env_file(path):
+    """Load KEY=VALUE lines from a .env file into os.environ (existing values win)"""
+    if not os.path.exists(path):
+        return
+    with open(path) as env_file:
+        for raw in env_file:
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            value = value.strip().strip('"').strip("'")
+            os.environ.setdefault(key.strip(), value)
+
+load_env_file(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+
+AUTH_USERNAME = os.environ.get("GAVEL_USERNAME", "")
+AUTH_PASSWORD_HASH = os.environ.get("GAVEL_PASSWORD_HASH", "")
+app.secret_key = os.environ.get("GAVEL_SECRET_KEY", "")
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    PERMANENT_SESSION_LIFETIME=datetime.timedelta(hours=12),
+)
+
+def auth_configured():
+    return bool(AUTH_USERNAME and AUTH_PASSWORD_HASH and app.secret_key)
+
+def safe_next_url(url):
+    """Only allow redirects back to a page on this site"""
+    if url and url.startswith("/") and not url.startswith("//"):
+        return url
+    return "/"
+
+def render_login_html(error="", next_url="/"):
+    error_html = f'<p class="error">{html.escape(error)}</p>' if error else ""
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>Gavel Meeting Exporter - Sign In</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 0; background: #f2f2f2; }}
+        .box {{ max-width: 340px; margin: 80px auto; background: white; padding: 30px; border: 1px solid #ddd; border-radius: 4px; }}
+        h1 {{ color: #003366; font-size: 22px; margin-top: 0; }}
+        label {{ display: block; margin: 12px 0 5px; }}
+        input[type="text"], input[type="password"] {{ width: 100%; padding: 8px; box-sizing: border-box; }}
+        button {{ margin-top: 20px; width: 100%; padding: 10px; background: #003366; color: white; border: none; cursor: pointer; font-size: 15px; }}
+        .error {{ color: #cc0000; }}
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h1>Gavel Meeting Exporter</h1>
+        {error_html}
+        <form method="post" action="/login">
+            <input type="hidden" name="next" value="{html.escape(next_url, quote=True)}">
+            <label for="username">Username</label>
+            <input type="text" id="username" name="username" autocomplete="username" required autofocus>
+            <label for="password">Password</label>
+            <input type="password" id="password" name="password" autocomplete="current-password" required>
+            <button type="submit">Sign In</button>
+        </form>
+    </div>
+</body>
+</html>"""
+
+@app.before_request
+def require_login():
+    """Every page except the login page needs a signed-in session"""
+    if request.endpoint in ("login", "static"):
+        return None
+    if session.get("user") == AUTH_USERNAME and AUTH_USERNAME:
+        return None
+    target = request.full_path if request.method == "GET" else "/"
+    return redirect(f"/login?next={requests.utils.quote(safe_next_url(target.rstrip('?')))}")
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    next_url = safe_next_url(request.values.get("next", "/"))
+    if request.method == "GET":
+        return render_login_html(next_url=next_url)
+
+    username = request.form.get("username", "")
+    password = request.form.get("password", "")
+    username_ok = hmac.compare_digest(username.encode(), AUTH_USERNAME.encode())
+    password_ok = check_password_hash(AUTH_PASSWORD_HASH, password)
+    if username_ok and password_ok:
+        session.clear()
+        session.permanent = True
+        session["user"] = AUTH_USERNAME
+        return redirect(next_url)
+
+    time.sleep(1)  # slow down password guessing
+    return render_login_html("Incorrect username or password.", next_url), 401
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect("/login")
 
 def get_meetings(date):
     """Gets meetings for a specific date"""
@@ -448,6 +563,7 @@ def render_index_html():
         </script>
     </head>
     <body>
+        <a href="/logout" style="float: right;">Sign out</a>
         <h1>Gavel Meeting Exporter</h1>
 
         <div class="tab">
@@ -574,6 +690,7 @@ def render_meetings_html(meetings, date_info, is_range=False):
         </style>
     </head>
     <body>
+        <a href="/logout" style="float: right;">Sign out</a>
         <a href="/" class="btn back-btn">← Back to Date Selection</a>
 
         <h1>{title}</h1>
@@ -1040,12 +1157,29 @@ def export_invintus_range():
 
 if __name__ == "__main__":
     import argparse
+    import getpass
 
     parser = argparse.ArgumentParser(description='Gavel Meeting Exporter')
     parser.add_argument('--port', type=int, default=5027,
                         help='Port to run the web server on (default: 5027)')
+    parser.add_argument('--hash-password', action='store_true',
+                        help='Prompt for a password and print the hash to put in .env as GAVEL_PASSWORD_HASH')
 
     args = parser.parse_args()
+
+    if args.hash_password:
+        first = getpass.getpass("New password: ")
+        second = getpass.getpass("Repeat password: ")
+        if not first or first != second:
+            sys.exit("Passwords were empty or didn't match.")
+        print(generate_password_hash(first))
+        sys.exit(0)
+
+    if not auth_configured():
+        sys.exit(
+            "Login is not set up. Create a .env file next to this script with\n"
+            "GAVEL_USERNAME, GAVEL_PASSWORD_HASH and GAVEL_SECRET_KEY (see .env.example)."
+        )
 
     print(f"Starting web server on port {args.port}...")
     print(f"Access the web interface at http://localhost:{args.port}/")
