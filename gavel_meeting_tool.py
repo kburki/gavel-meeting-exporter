@@ -270,10 +270,12 @@ def get_description_lines(meeting, remove_streaming=True):
     """Walk the meeting's agenda slices in order and return cleaned-up lines.
 
     Each line is a dict: {"bill": bill_root or "", "text": agenda text}.
-    Boilerplate lines are dropped and exact repeats are skipped.
+    Boilerplate lines are dropped. A line identical to the one right before it
+    is skipped, but lines like "Heard & Held" that repeat under different
+    bills are kept.
     """
     lines = []
-    seen = set()
+    previous = None
 
     for slice in meeting.get("MeetingSlices", []) or []:
         text = (slice.get("SliceHighliteText") or "").strip()
@@ -291,9 +293,9 @@ def get_description_lines(meeting, remove_streaming=True):
             text = (slice.get("ShortTitle") or "").strip()
 
         key = (bill, text)
-        if key in seen:
+        if key == previous:
             continue
-        seen.add(key)
+        previous = key
         lines.append({"bill": bill, "text": text})
 
     return lines
