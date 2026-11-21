@@ -16,13 +16,21 @@ This tool streamlines the workflow for broadcasting legislative meetings by prov
 ## Features
 
 - **Meeting Retrieval**: Fetch meeting information for specific dates or date ranges
-- **Interactive Interface**: Select meetings, assign encoders, and set runtime parameters
-- **Bill Information**: Display bills being discussed in each meeting
-- **Meeting Details**: Show location, time, status, and descriptions
+- **Interactive Interface**: Select meetings and set runtime parameters
+- **Bill Information**: Display bills being discussed in each meeting, linked to their BASIS bill pages
+- **Meeting Details**: Show location, time, and agenda descriptions
+- **Cleanup**: Canceled meetings and boilerplate agenda lines (invitation-only testimony, teleconference notes, AKL.tv streaming notes) are left out
 - **Export Options**:
-  - Standard CSV export with all meetings
-  - Invintus-compatible CSV with selected meetings and encoder assignments
-- **Encoder Assignment**: Select encoders for each meeting
+  - Standard CSV export with all meetings (plain-text descriptions)
+  - Invintus-compatible CSV with selected meetings (HTML descriptions, one `<div>` per agenda item)
+
+## Invintus CSV format
+
+Columns: `title`, `customID`, `startDateTime`, `description`, `category`, `location`, `estRuntime`, `liveToBreak`
+
+- `customID` is `CHAMBER-SPONSORYYYYMMDD_HHMMSS`, e.g. `H-FIN20250422_133000`
+- `category` is `Gavel Alaska, <Title>`
+- `description` is `--` when a meeting has no agenda items
 
 ## Requirements
 
@@ -35,7 +43,7 @@ This tool streamlines the workflow for broadcasting legislative meetings by prov
 
 1. Clone the repository:
    ```
-   git clone https://github.com/kburki/gavel-meeting-exporter.git
+   git clone git@github.com:kburki/gavel-meeting-exporter.git
    cd gavel-meeting-exporter
    ```
 
@@ -68,7 +76,6 @@ This tool streamlines the workflow for broadcasting legislative meetings by prov
 
 5. To export selected meetings to Invintus format:
    - Select meetings by checking the boxes
-   - Choose encoders for each selected meeting
    - Set the estimated runtime
    - Click "Export Selected to Invintus CSV"
 
@@ -80,7 +87,7 @@ The application uses the Alaska Legislature's BASIS API:
 
 ## License
 
-his project is licensed under the terms of the MIT license.
+This project is licensed under the terms of the MIT license.
 
 ## Contributing
 

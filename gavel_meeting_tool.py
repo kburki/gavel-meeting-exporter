@@ -35,21 +35,6 @@ TELECONFERENCE_PATTERN = re.compile(
     r"^[\W]*--[\W]*teleconference(d)?[\W]*(<Listen Only>)?[\W]*--[\W]*$", re.IGNORECASE | re.MULTILINE
 )
 
-# Encoder options
-ENCODERS = [
-    {"name": "> SRT-KTOOENC01", "id": "hm4mevet"},
-    {"name": "> SRT-KTOOENC02", "id": "w7tvhokr"},
-    {"name": "> SRT-KTOOENC03", "id": "q2ebqzmb"},
-    {"name": "> SRT-KTOOENC04", "id": "fo2axzyw"},
-    {"name": "> SRT-KTOOENC05", "id": "uzmbsgc4"},
-    {"name": "AK Leg Stream 1", "id": "rnbkqv4t"},
-    {"name": "AK Leg Stream 2", "id": "d4ayhbnx"},
-    {"name": "AK Leg Stream 3", "id": "l7kmwzbd"},
-    {"name": "AK Leg Stream 4", "id": "zrld0xmf"},
-    {"name": "AK Leg Stream 5", "id": "yxlm1fas"},
-    {"name": "AK Leg Stream 6", "id": "hcrujfx7"}
-]
-
 # Flask app setup
 app = Flask(__name__)
 
@@ -547,8 +532,6 @@ def render_meetings_html(meetings, date_info, is_range=False):
             .date-header {{ background-color: #003366; color: white; padding: 10px; margin-top: 30px; margin-bottom: 0; }}
             .description-cell {{ max-width: 300px; white-space: normal; }}
             .description-cell div {{ margin-bottom: 4px; }}
-            .encoder-select {{ display: none; width: 200px; }}
-            .encoder-select.active {{ display: block; }}
             select {{ padding: 5px; }}
         </style>
     </head>
@@ -599,7 +582,6 @@ def render_meetings_html(meetings, date_info, is_range=False):
                 <th>Title</th>
                 <th>Location</th>
                 <th>Time</th>
-                <th>Encoder</th>
                 <th>Bills</th>
                 <th>Description</th>
             </tr>
@@ -639,10 +621,7 @@ def render_meetings_html(meetings, date_info, is_range=False):
             # Select checkbox
             html += f"""
             <td>
-                <input type="checkbox" name="selected_meetings" value="{custom_id}"
-                    data-meeting-id="{meeting_row_id}"
-                    data-title="{title}"
-                    onchange="toggleEncoder(this)">
+                <input type="checkbox" name="selected_meetings" value="{custom_id}">
             </td>
             """
 
@@ -653,22 +632,6 @@ def render_meetings_html(meetings, date_info, is_range=False):
             html += f"<td>{title}</td>"
             html += f"<td>{location}</td>"
             html += f"<td>{formatted_time}</td>"
-
-            # Encoder dropdown
-            html += f"""
-            <td>
-                <select name="encoder_{custom_id}" class="encoder-select" id="encoder-{meeting_row_id}">
-                    <option value="">Select Encoder</option>
-            """
-
-            # Add encoder options
-            for encoder in ENCODERS:
-                html += f'<option value="{encoder["id"]}">{encoder["name"]}</option>'
-
-            html += """
-                </select>
-            </td>
-            """
 
             # Bills and Description
             html += f"<td>{bills_str}</td>"
@@ -702,55 +665,15 @@ def render_meetings_html(meetings, date_info, is_range=False):
     </form>
 
     <script>
-function selectAll() {
+function setAll(checked) {
     var checkboxes = document.querySelectorAll('input[name="selected_meetings"]');
     checkboxes.forEach(function(checkbox) {
-        checkbox.checked = true;
-        toggleEncoder(checkbox);
+        checkbox.checked = checked;
     });
 }
 
-function deselectAll() {
-    var checkboxes = document.querySelectorAll('input[name="selected_meetings"]');
-    checkboxes.forEach(function(checkbox) {
-        checkbox.checked = false;
-        toggleEncoder(checkbox);
-    });
-}
-
-function toggleEncoder(checkbox) {
-    var meetingId = checkbox.getAttribute('data-meeting-id');
-    var encoderSelect = document.getElementById('encoder-' + meetingId);
-
-    if (checkbox.checked) {
-        encoderSelect.classList.add('active');
-
-        // Set default category as "Gavel Alaska, [Title]"
-        var title = checkbox.getAttribute('data-title');
-        var meetingValue = checkbox.value;
-        var hiddenInput = document.getElementById('category-' + meetingValue);
-
-        if (!hiddenInput) {
-            hiddenInput = document.createElement('input');
-            hiddenInput.type = 'hidden';
-            hiddenInput.name = 'category_' + meetingValue;
-            hiddenInput.id = 'category-' + meetingValue;
-            document.getElementById('invintus-form').appendChild(hiddenInput);
-        }
-
-        hiddenInput.value = 'Gavel Alaska, ' + title;
-    } else {
-        encoderSelect.classList.remove('active');
-        encoderSelect.value = '';
-
-        // Remove category hidden input
-        var meetingValue = checkbox.value;
-        var hiddenInput = document.getElementById('category-' + meetingValue);
-        if (hiddenInput) {
-            hiddenInput.parentNode.removeChild(hiddenInput);
-        }
-    }
-}
+function selectAll() { setAll(true); }
+function deselectAll() { setAll(false); }
 
 document.getElementById('invintus-form').onsubmit = function(e) {
     var checkboxes = document.querySelectorAll('input[name="selected_meetings"]:checked');
@@ -759,35 +682,6 @@ document.getElementById('invintus-form').onsubmit = function(e) {
         e.preventDefault();
         return false;
     }
-
-    // Check if any selected meetings don't have encoders
-    var missingEncoders = false;
-    var encoderSelects = [];
-
-    checkboxes.forEach(function(checkbox) {
-        var meetingId = checkbox.getAttribute('data-meeting-id');
-        var encoderSelect = document.getElementById('encoder-' + meetingId);
-
-        if (!encoderSelect.value) {
-            missingEncoders = true;
-            encoderSelects.push(encoderSelect);
-        }
-    });
-
-    // If some encoders are missing, show a warning but allow continuing
-    if (missingEncoders) {
-        // Highlight the missing encoders
-        encoderSelects.forEach(function(select) {
-            select.style.border = '2px solid orange';
-        });
-
-        // Ask for confirmation
-        if (!confirm('Some meetings are missing encoder selections. These will be exported with blank encoder values. Continue?')) {
-            e.preventDefault();
-            return false;
-        }
-    }
-
     return true;
 };
     </script>
@@ -852,13 +746,13 @@ def format_meetings_csv(meetings, include_date=False):
 
     return output.getvalue()
 
-def format_meetings_invintus_csv(meetings, encoders, categories, runtime="01:00", live_to_break=True):
+def format_meetings_invintus_csv(meetings, runtime="01:00", live_to_break=True):
     """Format meetings for Invintus CSV export"""
     output = StringIO()
     writer = csv.writer(output, quoting=csv.QUOTE_ALL)
 
     # Write header according to Invintus spec
-    writer.writerow(["title", "customID", "startDateTime", "description", "encoder", "category", "location", "estRuntime", "liveToBreak"])
+    writer.writerow(["title", "customID", "startDateTime", "description", "category", "location", "estRuntime", "liveToBreak"])
 
     # Set default values
     live_to_break_value = "TRUE" if live_to_break else "FALSE"
@@ -891,23 +785,16 @@ def format_meetings_invintus_csv(meetings, encoders, categories, runtime="01:00"
         # 2. customID (no whitespace)
         custom_id = generate_custom_id(meeting)
 
-        # Include all selected meetings, even if no encoder is set
-        if custom_id not in encoders:
-            continue  # Skip unselected meetings
-
         # 3. startDateTime already formatted above
 
         # 4. Description - csv_beta.php style HTML, streaming info removed;
         #    '--' when empty, as the PHP does
         description = build_description(meeting, for_csv=True) or "--"
 
-        # 5. encoder (using selected encoder or empty string if none)
-        encoder = encoders[custom_id] if encoders[custom_id] else ""
+        # 5. category: "Gavel Alaska, <Title>"
+        category = f"Gavel Alaska, {title}" if title else "Gavel Alaska"
 
-        # 6. category (using custom category for each meeting)
-        category = categories.get(custom_id, "Gavel Alaska")
-
-        # 7. location
+        # 6. location
         location = meeting.get("Location", "")
 
         # Write row with all fields
@@ -916,7 +803,6 @@ def format_meetings_invintus_csv(meetings, encoders, categories, runtime="01:00"
             custom_id,
             start_datetime,
             description,
-            encoder,
             category,
             location,
             runtime,
@@ -1032,19 +918,6 @@ def export_invintus():
     if isinstance(meetings_data, dict) and "error" in meetings_data:
         return f"Error: {meetings_data['error']}"
 
-    # Get encoders and categories for each selected meeting.
-    # Every selected meeting gets an encoders entry (blank if none chosen) so it
-    # is still exported, as the "blank encoder values" warning in the UI promises.
-    encoders = {}
-    categories = {}
-
-    for meeting_id in selected_meetings:
-        encoders[meeting_id] = request.form.get(f"encoder_{meeting_id}", "")
-
-        category_key = f"category_{meeting_id}"
-        if category_key in request.form and request.form[category_key]:
-            categories[meeting_id] = request.form[category_key]
-
     # Filter to only selected meetings
     filtered_meetings = []
 
@@ -1056,8 +929,6 @@ def export_invintus():
     # Generate Invintus CSV
     csv_data = format_meetings_invintus_csv(
         filtered_meetings,
-        encoders=encoders,
-        categories=categories,
         runtime=runtime,
         live_to_break=live_to_break
     )
@@ -1085,17 +956,6 @@ def export_invintus_range():
         start_date, end_date = date_info.split(" to ")
     else:
         start_date = end_date = date_info
-
-    # Get encoders and categories for each selected meeting (blank encoder if none chosen)
-    encoders = {}
-    categories = {}
-
-    for meeting_id in selected_meetings:
-        encoders[meeting_id] = request.form.get(f"encoder_{meeting_id}", "")
-
-        category_key = f"category_{meeting_id}"
-        if category_key in request.form and request.form[category_key]:
-            categories[meeting_id] = request.form[category_key]
 
     # Get meetings
     if start_date == end_date:
@@ -1125,8 +985,6 @@ def export_invintus_range():
     # Generate Invintus CSV
     csv_data = format_meetings_invintus_csv(
         filtered_meetings,
-        encoders=encoders,
-        categories=categories,
         runtime=runtime,
         live_to_break=live_to_break
     )
