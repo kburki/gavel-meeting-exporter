@@ -545,7 +545,15 @@ def render_meetings_html(meetings, date_info, is_range=False):
         <style>
             body {{ font-family: Arial, sans-serif; margin: 20px; }}
             h1, h2, h3 {{ color: #003366; }}
-            table {{ border-collapse: collapse; width: 100%; margin-top: 20px; }}
+            table {{ border-collapse: collapse; width: 100%; margin-top: 20px; table-layout: fixed; }}
+            /* Column widths: Select, Date, Title, Location, Time, Bills; Description takes the rest */
+            th:nth-child(1), td:nth-child(1) {{ width: 50px; text-align: center; }}
+            th:nth-child(2), td:nth-child(2) {{ width: 75px; }}
+            th:nth-child(3), td:nth-child(3) {{ width: 14%; }}
+            th:nth-child(4), td:nth-child(4) {{ width: 10%; }}
+            th:nth-child(5), td:nth-child(5) {{ width: 80px; white-space: nowrap; }}
+            th:nth-child(6), td:nth-child(6) {{ width: 9%; }}
+            td {{ overflow-wrap: break-word; }}
             th, td {{ padding: 8px; text-align: left; border: 1px solid #ddd; vertical-align: top; }}
             th {{ background-color: #003366; color: white; }}
             tr:nth-child(even) {{ background-color: #f2f2f2; }}
@@ -560,7 +568,7 @@ def render_meetings_html(meetings, date_info, is_range=False):
             .checkbox-row {{ margin-bottom: 5px; }}
             .back-btn {{ margin-bottom: 20px; }}
             .date-header {{ background-color: #003366; color: white; padding: 10px; margin-top: 30px; margin-bottom: 0; }}
-            .description-cell {{ max-width: 300px; white-space: normal; }}
+            .description-cell {{ white-space: normal; }}
             .description-cell div {{ margin-bottom: 4px; }}
             select {{ padding: 5px; }}
         </style>
