@@ -415,6 +415,31 @@ def get_description_lines(meeting, remove_streaming=True):
 
     return lines
 
+def get_meeting_documents_url(meeting):
+    """Link to the meeting's Documents tab on akleg.gov.
+
+    The tab exists whether or not documents have been posted yet, so the link
+    stays useful when documents are added days after the export. Uses the
+    meeting's Url from BASIS, or builds it from chamber, sponsor, date and time.
+    """
+    url = (meeting.get("Url") or "").strip()
+    if url:
+        base, _, query = url.partition("?Meeting=")
+        if not query:
+            return ""
+        meeting_key = query
+    else:
+        date_str = meeting.get("MeetingDate", "")[:10]
+        time_str = meeting.get("MeetingTime", "")
+        chamber = meeting.get("Chamber", "")
+        sponsor = meeting.get("MeetingSponsor", "")
+        if not (date_str and time_str and chamber and sponsor):
+            return ""
+        base = "https://www.akleg.gov/basis/Meeting/Detail"
+        meeting_key = f"{chamber}{sponsor} {date_str} {time_str}"
+    base = base.replace("http://", "https://", 1)
+    return f"{base}?Meeting={requests.utils.quote(meeting_key, safe=':-')}#tab4_4"
+
 def get_meeting_documents(meeting):
     """Return the meeting's attached documents as [{"name", "url"}].
 
@@ -445,7 +470,8 @@ def build_description(meeting, for_csv=False, as_html=True):
         as_html: If True (default), formats like csv_beta.php: one <div> per
                  agenda item, bill numbers linked to their BASIS page
                  ('<a ...>HB 12</a> - SHORT TITLE'), followed by a
-                 'Documents:' list linking any attached documents. If False,
+                 'Documents:' list: a link to the meeting's Documents tab on
+                 akleg.gov (always), then any documents attached at export time. If False,
                  returns plain text with items separated by ' | ' (no documents).
     """
     session = get_session_number(meeting)
@@ -466,8 +492,12 @@ def build_description(meeting, for_csv=False, as_html=True):
                 content = text
             parts.append(f"<div>{content}</div>")
         documents = get_meeting_documents(meeting)
-        if documents:
+        documents_url = get_meeting_documents_url(meeting)
+        if documents or documents_url:
             parts.append("<div>Documents:</div>")
+            if documents_url:
+                url = html.escape(documents_url, quote=True)
+                parts.append(f'<div><a href="{url}" target="_blank">All meeting documents on akleg.gov</a></div>')
             for doc in documents:
                 url = html.escape(doc["url"], quote=True)
                 name = html.escape(doc["name"], quote=False)
