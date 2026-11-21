@@ -43,7 +43,7 @@ def get_meetings(date):
     # Create headers for the request
     headers = {
         "X-Alaska-Legislature-Basis-Version": API_VERSION,
-        "X-Alaska-Legislature-Basis-Query": f"meetings;date={date};details",
+        "X-Alaska-Legislature-Basis-Query": f"meetings;date={date};details,documents",
         "Accept-language": "en"
     }
 
@@ -300,6 +300,26 @@ def get_description_lines(meeting, remove_streaming=True):
 
     return lines
 
+def get_meeting_documents(meeting):
+    """Return the meeting's attached documents as [{"name", "url"}].
+
+    BASIS only includes these when the query asks for them
+    ("meetings;date=...;details,documents"). The meeting's HasDocuments
+    flag is not reliable (it is false even when documents exist), so the
+    Documents list itself is used. Display names drop the file extension.
+    """
+    docs = []
+    seen = set()
+    for doc in meeting.get("Documents") or []:
+        url = (doc.get("Url") or "").strip()
+        name = (doc.get("Name") or "").strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        display = re.sub(r"\.(pdf|docx?|xlsx?|pptx?)$", "", name, flags=re.IGNORECASE).strip() or "Document"
+        docs.append({"name": display, "url": url})
+    return docs
+
 def build_description(meeting, for_csv=False, as_html=True):
     """Build the meeting description from its agenda slices.
 
@@ -309,8 +329,9 @@ def build_description(meeting, for_csv=False, as_html=True):
                  now removed from every output, preview included
         as_html: If True (default), formats like csv_beta.php: one <div> per
                  agenda item, bill numbers linked to their BASIS page
-                 ('<a ...>HB 12</a> - SHORT TITLE'). If False, returns plain
-                 text with items separated by ' | '.
+                 ('<a ...>HB 12</a> - SHORT TITLE'), followed by a
+                 'Documents:' list linking any attached documents. If False,
+                 returns plain text with items separated by ' | ' (no documents).
     """
     session = get_session_number(meeting)
     canceled = meeting.get("MeetingCanceled", False)
@@ -329,6 +350,13 @@ def build_description(meeting, for_csv=False, as_html=True):
             else:
                 content = text
             parts.append(f"<div>{content}</div>")
+        documents = get_meeting_documents(meeting)
+        if documents:
+            parts.append("<div>Documents:</div>")
+            for doc in documents:
+                url = html.escape(doc["url"], quote=True)
+                name = html.escape(doc["name"], quote=False)
+                parts.append(f'<div><a href="{url}" target="_blank">{name}</a></div>')
         return "".join(parts)
 
     parts = []
