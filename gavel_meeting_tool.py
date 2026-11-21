@@ -4,12 +4,17 @@ Gavel Meeting Exporter
 
 This script fetches meeting information from the Alaska Legislature's BASIS API
 and provides options to export in various formats including Invintus-compatible CSV.
+
+Description formatting follows csv_beta.php: one <div> per agenda item, bill
+numbers linked to their BASIS bill page, and boilerplate lines (invitation-only
+testimony, AKL.tv streaming notes, teleconference notes) removed.
 """
 
 import requests
 import json
 import csv
 import datetime
+import html
 import re
 import sys
 import os
@@ -19,6 +24,16 @@ from flask import Flask, request, Response, render_template_string
 # Configuration
 API_BASE_URL = "http://www.akleg.gov/publicservice/basis/"
 API_VERSION = "1.4"
+
+# Bill detail page on the public BASIS site (session number + bill root, e.g. HB12)
+BILL_URL_TEMPLATE = "https://www.akleg.gov/basis/Bill/Detail/{session}?Root={bill_type}{bill_num}"
+
+# Agenda lines dropped from descriptions (same patterns as csv_beta.php)
+TESTIMONY_PATTERN = re.compile(r"--\s*Testimony\s*<Invitation\s*Only>\s*--", re.IGNORECASE)
+AKL_STREAM_PATTERN = re.compile(r"^[\W]*Streamed live on AKL\.tv[\W]*$", re.IGNORECASE | re.MULTILINE)
+TELECONFERENCE_PATTERN = re.compile(
+    r"^[\W]*--[\W]*teleconference(d)?[\W]*(<Listen Only>)?[\W]*--[\W]*$", re.IGNORECASE | re.MULTILINE
+)
 
 # Encoder options
 ENCODERS = [
@@ -46,16 +61,16 @@ def get_meetings(date):
         "X-Alaska-Legislature-Basis-Query": f"meetings;date={date};details",
         "Accept-language": "en"
     }
-    
+
     # Get the meetings data
     url = f"{API_BASE_URL}meetings?json=true"
-    
+
     try:
         response = requests.get(url, headers=headers)
-        
+
         if response.status_code != 200:
             return {"error": f"Failed to retrieve meetings data. Status code: {response.status_code}"}
-        
+
         # Decode JSON response
         meetings_data = response.json()
 
@@ -71,7 +86,7 @@ def get_meetings(date):
 
         # Get the meetings list
         meetings = meetings_data["Basis"]["Meetings"]
-        
+
         # Make sure we have a list even if there's a different structure
         if not isinstance(meetings, list):
             if isinstance(meetings, dict) and "Meeting" in meetings:
@@ -80,11 +95,10 @@ def get_meetings(date):
                     meetings = [meetings]
             else:
                 return {"error": "Unexpected structure in Meetings field"}
-        
+
         return meetings
-       
+
     except Exception as e:
-        import traceback
         return {"error": f"Exception: {str(e)}"}
 
 def get_meeting_range(start_date, end_date):
@@ -95,13 +109,13 @@ def get_meeting_range(start_date, end_date):
         end = datetime.datetime.strptime(end_date, "%m/%d/%Y")
     except ValueError:
         return {"error": "Invalid date format. Please use MM/DD/YYYY."}
-    
+
     # Check range
     if (end - start).days > 30:
         return {"error": "Date range too large. Maximum range is 30 days."}
-    
+
     meetings_by_date = {}
-    
+
     # Get meetings for each date in the range
     current = start
     while current <= end:
@@ -109,7 +123,7 @@ def get_meeting_range(start_date, end_date):
         meetings = get_meetings(date_str)
         meetings_by_date[date_str] = meetings
         current += datetime.timedelta(days=1)
-    
+
     return meetings_by_date
 
 def get_chamber(meeting):
@@ -126,21 +140,21 @@ def build_title(meeting):
     title = meeting.get("MeetingTitle", "")
     if not title:
         return ""
-    
+
     chamber = get_chamber(meeting)
     committee = title.title()  # Convert to title case
-    
+
     sponsor_type = meeting.get("SponsorType")
-    
+
     if sponsor_type == "Standing Committee" and chamber:
         return f"{chamber} {committee} Committee"
     elif sponsor_type == "Special Committee" and chamber:
         return f"{chamber} {committee} Special Committee"
     elif sponsor_type == "Finance SubCommittee" and chamber:
         return f"{chamber} Finance: {committee} Subcommittee"
-    
+
     return title.title()
-    
+
 def format_short_date(date_str):
     """Format date string to 'MM/DD/YY'"""
     try:
@@ -151,7 +165,7 @@ def format_short_date(date_str):
     except ValueError:
         # Return original if there's an issue
         return date_str
-    
+
 def format_date_with_day(date_str):
     """Format date string with day of week: 'Tuesday April 22, 2025'"""
     try:
@@ -163,36 +177,85 @@ def format_date_with_day(date_str):
         # Return original if there's an issue
         return date_str
 
+def get_session_number(meeting):
+    """Work out the legislature number (e.g. 34) from the meeting date.
+
+    The 1st Legislature convened in 1959 and each legislature spans two years,
+    so 2025-2026 is the 34th. Falls back to the current year if the meeting
+    has no usable date.
+    """
+    year = None
+    date_str = meeting.get("MeetingDate", "")
+    if date_str:
+        try:
+            year = datetime.datetime.strptime(date_str[:10], "%Y-%m-%d").year
+        except ValueError:
+            year = None
+    if year is None:
+        year = datetime.datetime.now().year
+    return (year - 1959) // 2 + 1
+
+def format_bill_number(bill_root):
+    """Normalize a bill root like 'HB  12' or 'hb12' to 'HB 12'.
+
+    Returns (display_text, bill_type, bill_num); type and num are None when
+    the bill root isn't in the expected letters-then-digits form.
+    """
+    match = re.match(r"^\s*([A-Za-z]+)\s*(\d+)\s*$", bill_root or "")
+    if not match:
+        return (bill_root or "").strip(), None, None
+    bill_type = match.group(1).upper()
+    bill_num = str(int(match.group(2)))  # drop leading zeros
+    return f"{bill_type} {bill_num}", bill_type, bill_num
+
+def create_bill_link(bill_root, session):
+    """Return an HTML link to the bill's BASIS page (plain text if unrecognized)"""
+    display, bill_type, bill_num = format_bill_number(bill_root)
+    if not bill_type:
+        return html.escape(display, quote=False)
+    url = BILL_URL_TEMPLATE.format(session=session, bill_type=bill_type, bill_num=bill_num)
+    return f'<a href="{url}" target="_blank">{display}</a>'
+
+def is_filtered_line(text, remove_streaming=True):
+    """True if an agenda line is boilerplate that shouldn't appear in descriptions"""
+    if TESTIMONY_PATTERN.search(text):
+        return True
+    if TELECONFERENCE_PATTERN.search(text):
+        return True
+    if remove_streaming and AKL_STREAM_PATTERN.search(text):
+        return True
+    return False
+
 def extract_bills_with_details(meeting):
     """Extract bills with their related details from meeting slices"""
     bill_details = []
     meeting_slices = meeting.get("MeetingSlices", [])
-    
+
     # Group slices by bill
     current_bill = None
     current_details = []
-    
+
     # Track what details we've already added to avoid duplicates
     used_details = set()
-    
+
     for slice in meeting_slices:
         bill_root = slice.get("BillRoot", "")
         highlight_text = slice.get("SliceHighliteText", "")
-        
+
         # Skip empty slices
         if not bill_root and not highlight_text:
             continue
-            
+
         # If we have a new bill, start a new group
         if bill_root and bill_root != current_bill:
             # Save the previous bill group if it exists
             if current_bill and current_details:
                 bill_details.append({"bill": current_bill, "details": current_details})
-                
+
             # Start a new group
             current_bill = bill_root
             current_details = []
-        
+
         # Add highlight text as a detail for the current bill
         if current_bill and highlight_text and "MEETING CANCELED" not in highlight_text.upper():
             # Don't add the bill itself as a detail
@@ -200,116 +263,140 @@ def extract_bills_with_details(meeting):
                 # Remember we've used this detail with a bill
                 used_details.add(highlight_text)
                 current_details.append(highlight_text)
-    
+
     # Add the last bill group if it exists
     if current_bill and current_details:
         bill_details.append({"bill": current_bill, "details": current_details})
-    
+
     # Find slices with no bill but with highlight text that hasn't been used with a bill
     general_items = []
     for slice in meeting_slices:
         bill_root = slice.get("BillRoot", "")
         highlight_text = slice.get("SliceHighliteText", "")
-        
+
         if not bill_root and highlight_text and "MEETING CANCELED" not in highlight_text.upper():
             # Only add items that weren't already associated with a bill
             if highlight_text not in used_details and highlight_text not in general_items:
                 general_items.append(highlight_text)
-    
+
     return bill_details, general_items
 
-def build_description(meeting, for_csv=False):
-    """Build a description from the meeting slices and bills with their details
-    
+def get_description_lines(meeting, remove_streaming=True):
+    """Walk the meeting's agenda slices in order and return cleaned-up lines.
+
+    Each line is a dict: {"bill": bill_root or "", "text": agenda text}.
+    Boilerplate lines are dropped and exact repeats are skipped.
+    """
+    lines = []
+    seen = set()
+
+    for slice in meeting.get("MeetingSlices", []) or []:
+        text = (slice.get("SliceHighliteText") or "").strip()
+        bill = (slice.get("BillRoot") or "").strip()
+
+        if not text and not bill:
+            continue
+        if "MEETING CANCELED" in text.upper():
+            continue
+        if text and is_filtered_line(text, remove_streaming):
+            continue
+
+        # If the agenda text is just the bill number again, use the bill's short title instead
+        if bill and (not text or format_bill_number(text)[0] == format_bill_number(bill)[0]):
+            text = (slice.get("ShortTitle") or "").strip()
+
+        key = (bill, text)
+        if key in seen:
+            continue
+        seen.add(key)
+        lines.append({"bill": bill, "text": text})
+
+    return lines
+
+def build_description(meeting, for_csv=False, as_html=True):
+    """Build the meeting description from its agenda slices.
+
     Args:
         meeting: The meeting data
-        for_csv: If True, excludes stream info from the description
+        for_csv: Kept for compatibility; "Streamed live on AKL.tv" lines are
+                 now removed from every output, preview included
+        as_html: If True (default), formats like csv_beta.php: one <div> per
+                 agenda item, bill numbers linked to their BASIS page
+                 ('<a ...>HB 12</a> - SHORT TITLE'). If False, returns plain
+                 text with items separated by ' | '.
     """
-    description_parts = []
-    
-    # Check if meeting is canceled
-    if meeting.get("MeetingCanceled", False):
-        description_parts.append("** MEETING CANCELED **")
-    
-    # Get bills with their details
-    bill_details, general_items = extract_bills_with_details(meeting)
-    
-    # Format bills with their details
-    if bill_details:
-        bill_texts = []
-        for item in bill_details:
-            bill = item["bill"]
-            details = item["details"]
-            
-            if details:
-                # Get the short title for the bill if available
-                short_title = ""
-                for slice in meeting.get("MeetingSlices", []):
-                    if slice.get("BillRoot") == bill and "ShortTitle" in slice:
-                        short_title = slice.get("ShortTitle", "")
-                        break
-                
-                # Use short title if available, otherwise just use bill number
-                if short_title:
-                    bill_text = f"{bill} {short_title}"
-                else:
-                    bill_text = bill
-                
-                # Add details after the bill
-                bill_text += " " + " ".join(details)
+    session = get_session_number(meeting)
+    canceled = meeting.get("MeetingCanceled", False)
+    # AKL.tv streaming notes are always removed, as in csv_beta.php
+    lines = get_description_lines(meeting, remove_streaming=True)
+
+    if as_html:
+        parts = []
+        if canceled:
+            parts.append("<div>** MEETING CANCELED **</div>")
+        for line in lines:
+            text = html.escape(line["text"], quote=False)
+            if line["bill"]:
+                link = create_bill_link(line["bill"], session)
+                content = f"{link} - {text}" if text else link
             else:
-                bill_text = bill
-                
-            bill_texts.append(bill_text)
-        
-        description_parts.append("Bills: " + ", ".join(bill_texts))
-    
-    # Add general items
-    if general_items:
-        description_parts.append(" | ".join(general_items))
-    
-    # Build the full description
-    description = " | ".join(description_parts)
-    
-    # Remove streaming info for CSV exports if needed
-    if for_csv:
-        description = description.replace("**Streamed live on AKL.tv**", "").replace(" |  | ", " | ").strip()
-        # Clean up any trailing or double separators after removing streaming info
-        while " | |" in description:
-            description = description.replace(" | |", " |")
-        if description.endswith(" | "):
-            description = description[:-3]
-    
-    return description
+                content = text
+            parts.append(f"<div>{content}</div>")
+        return "".join(parts)
+
+    parts = []
+    if canceled:
+        parts.append("** MEETING CANCELED **")
+    for line in lines:
+        if line["bill"]:
+            bill_display = format_bill_number(line["bill"])[0]
+            parts.append(f"{bill_display} - {line['text']}" if line["text"] else bill_display)
+        else:
+            parts.append(line["text"])
+    return " | ".join(parts)
 
 def should_skip_event(meeting):
     """Determine if a meeting should be skipped"""
+    # Skip canceled meetings entirely (as csv_beta.php does)
+    if meeting.get("MeetingCanceled", False):
+        return True
+
     # Skip "No meeting scheduled" meetings
     meeting_slices = meeting.get("MeetingSlices", [])
     for slice in meeting_slices:
         highlight_text = slice.get("SliceHighliteText", "").strip().lower()
         if highlight_text == "no meeting scheduled":
             return True
-    
+
     return False
 
 def generate_custom_id(meeting):
-    """Generate a custom ID for the meeting"""
+    """Generate a custom ID for the meeting: CHAMBER-SPONSORYYYYMMDD_HHMMSS
+
+    e.g. H-FIN20250422_133000. Like csv_beta.php it puts an underscore between
+    date and time, but month, day, hour, minute and second are always zero-padded
+    so every ID is unique and the same length.
+    """
     date_str = meeting.get("MeetingDate", "")
     time_str = meeting.get("MeetingTime", "")
-    
+
     if not date_str or not time_str:
         return "unknown"
-    
+
     chamber = meeting.get("Chamber", "")
     sponsor = meeting.get("MeetingSponsor", "")
-    return f"{chamber}-{sponsor}{date_str.replace('-', '')}{time_str.replace(':', '')}"
+    try:
+        dt = datetime.datetime.strptime(f"{date_str[:10]} {time_str}", "%Y-%m-%d %H:%M:%S")
+        stamp = dt.strftime("%Y%m%d_%H%M%S")
+    except ValueError:
+        stamp = f"{date_str.replace('-', '')}_{time_str.replace(':', '')}"
+    return f"{chamber}-{sponsor}{stamp}"
 
 def render_index_html():
     """Render index page HTML"""
     today = datetime.datetime.now().strftime("%m/%d/%Y")
     tomorrow = (datetime.datetime.now() + datetime.timedelta(days=1)).strftime("%m/%d/%Y")
-    
+
     html = f"""
     <!DOCTYPE html>
     <html>
@@ -347,12 +434,12 @@ def render_index_html():
     </head>
     <body>
         <h1>Gavel Meeting Exporter</h1>
-        
+
         <div class="tab">
             <button id="single-btn" class="tablinks active" onclick="openTab('single')">Single Date</button>
             <button id="range-btn" class="tablinks" onclick="openTab('range')">Date Range</button>
         </div>
-        
+
         <div id="single" class="tabcontent" style="display: block;">
             <h3>View Meetings for a Single Date</h3>
             <form action="/view" method="get">
@@ -363,7 +450,7 @@ def render_index_html():
                 <button type="submit">View Meetings</button>
             </form>
         </div>
-        
+
         <div id="range" class="tabcontent">
             <h3>View Meetings for a Date Range</h3>
             <form action="/view_range" method="get">
@@ -378,7 +465,7 @@ def render_index_html():
                 <button type="submit">View Date Range</button>
             </form>
         </div>
-        
+
         <script>
             function openTab(tabName) {{
                 var i, tabcontent, tablinks;
@@ -397,22 +484,22 @@ def render_index_html():
     </body>
     </html>
     """
-    
+
     return html
 
 def render_meetings_html(meetings, date_info, is_range=False):
     """Render meetings list HTML"""
     if isinstance(meetings, dict) and "error" in meetings:
         return f"<h1>Error</h1><p>{meetings['error']}</p>"
-    
+
     if is_range:
         start_formatted = format_date_with_day(date_info['start'])
         end_formatted = format_date_with_day(date_info['end'])
         title = f"Gavel Meeting Exporter - {start_formatted} to {end_formatted}"
     else:
         formatted_date = format_date_with_day(date_info)
-        title = f"Gavel Meeting Exporter - {formatted_date}"    
-        
+        title = f"Gavel Meeting Exporter - {formatted_date}"
+
     # Prepare meetings by date for display
     meetings_by_date = {}
     if is_range:
@@ -431,10 +518,10 @@ def render_meetings_html(meetings, date_info, is_range=False):
         valid_meetings = [m for m in meetings if not should_skip_event(m)]
         if valid_meetings:
             meetings_by_date[date_info] = valid_meetings
-    
+
     # Count total valid meetings
     total_meetings = sum(len(meetings) for meetings in meetings_by_date.values())
-    
+
     html = f"""
     <!DOCTYPE html>
     <html>
@@ -459,6 +546,7 @@ def render_meetings_html(meetings, date_info, is_range=False):
             .back-btn {{ margin-bottom: 20px; }}
             .date-header {{ background-color: #003366; color: white; padding: 10px; margin-top: 30px; margin-bottom: 0; }}
             .description-cell {{ max-width: 300px; white-space: normal; }}
+            .description-cell div {{ margin-bottom: 4px; }}
             .encoder-select {{ display: none; width: 200px; }}
             .encoder-select.active {{ display: block; }}
             select {{ padding: 5px; }}
@@ -466,42 +554,42 @@ def render_meetings_html(meetings, date_info, is_range=False):
     </head>
     <body>
         <a href="/" class="btn back-btn">← Back to Date Selection</a>
-        
+
         <h1>{title}</h1>
-        
+
         <div class="export-options">
-            <a href="{'export_csv_range' if is_range else 'export_csv'}?date={date_info['start'] if is_range else date_info}" class="btn">Export All to CSV</a>
+            <a href="{'export_csv_range' if is_range else 'export_csv'}?date={date_info['start'] + ' to ' + date_info['end'] if is_range else date_info}" class="btn">Export All to CSV</a>
         </div>
-        
+
         <h2>Meetings</h2>
     """
-    
+
     if not total_meetings:
         html += "<p>No meetings found for this date period.</p>"
         html += "</body></html>"
         return html
-    
+
     html += f"<p>Found {total_meetings} meetings. Select meetings for Invintus export:</p>"
-    
+
     # Start form for Invintus export
     html += f"""
     <form method="post" action="{'export_invintus_range' if is_range else 'export_invintus'}" id="invintus-form">
         <input type="hidden" name="date_info" value="{date_info['start'] + ' to ' + date_info['end'] if is_range else date_info}">
-        
+
         <div>
             <button type="button" class="btn" onclick="selectAll()">Select All</button>
             <button type="button" class="btn" onclick="deselectAll()">Deselect All</button>
         </div>
     """
-    
+
     # For each date, create a table
     for date in sorted(meetings_by_date.keys()):
         date_meetings = meetings_by_date[date]
-    
-        # Add date header - CHANGE THIS LINE
+
+        # Add date header
         formatted_date = format_date_with_day(date)
         html += f'<h3 class="date-header">Meetings for {formatted_date}</h3>'
-    
+
         # Add table for this date
         html += """
         <table>
@@ -509,7 +597,6 @@ def render_meetings_html(meetings, date_info, is_range=False):
                 <th>Select</th>
                 <th>Date</th>
                 <th>Title</th>
-                <th>Status</th>
                 <th>Location</th>
                 <th>Time</th>
                 <th>Encoder</th>
@@ -517,15 +604,13 @@ def render_meetings_html(meetings, date_info, is_range=False):
                 <th>Description</th>
             </tr>
         """
-        
+
         # Add meeting rows for this date
         for i, meeting in enumerate(date_meetings):
             # Get basic meeting info
             title = build_title(meeting)
             location = meeting.get("Location", "No Location")
-            canceled = meeting.get("MeetingCanceled", False)
-            status = '<span class="canceled">CANCELED</span>' if canceled else "Active"
-            
+
             # Format time
             time_str = meeting.get("MeetingTime", "")
             if time_str:
@@ -536,88 +621,85 @@ def render_meetings_html(meetings, date_info, is_range=False):
                     formatted_time = time_str
             else:
                 formatted_time = "No Time"
-            
+
             # Get bills with details
             bill_details, _ = extract_bills_with_details(meeting)
-            bills_str = ", ".join([item["bill"] for item in bill_details]) if bill_details else "None"
-            
-            # Get description (keep streaming info for HTML display)
+            bills_str = ", ".join([format_bill_number(item["bill"])[0] for item in bill_details]) if bill_details else "None"
+
+            # Get description (same formatting as the Invintus export)
             description = build_description(meeting)
-            
+
             # Generate custom ID for this meeting
             custom_id = generate_custom_id(meeting)
             meeting_row_id = f"meeting-{date.replace('/', '')}-{i}"
-            
+
             # Add row to table
             html += f"<tr id='{meeting_row_id}'>"
-            
+
             # Select checkbox
             html += f"""
             <td>
-                <input type="checkbox" name="selected_meetings" value="{custom_id}" 
-                    data-meeting-id="{meeting_row_id}" 
-                    data-title="{title}" 
+                <input type="checkbox" name="selected_meetings" value="{custom_id}"
+                    data-meeting-id="{meeting_row_id}"
+                    data-title="{title}"
                     onchange="toggleEncoder(this)">
             </td>
             """
 
-            # Date column - this is new
+            # Date column
             html += f"<td>{format_short_date(date)}</td>"
 
             # Other columns
             html += f"<td>{title}</td>"
-            html += f"<td>{status}</td>"
             html += f"<td>{location}</td>"
             html += f"<td>{formatted_time}</td>"
-            
+
             # Encoder dropdown
             html += f"""
             <td>
                 <select name="encoder_{custom_id}" class="encoder-select" id="encoder-{meeting_row_id}">
                     <option value="">Select Encoder</option>
             """
-            
+
             # Add encoder options
             for encoder in ENCODERS:
                 html += f'<option value="{encoder["id"]}">{encoder["name"]}</option>'
-            
+
             html += """
                 </select>
             </td>
             """
-            
+
             # Bills and Description
             html += f"<td>{bills_str}</td>"
             html += f'<td class="description-cell">{description}</td>'
-            
+
             html += "</tr>"
-        
+
         html += "</table>"
-    
+
     # Add Invintus export options
     html += """
     <div class="export-form">
         <h3>Invintus Export Options</h3>
-        
+
         <div class="form-row">
             <label for="runtime">Estimated Runtime (HH:MM):</label>
             <input type="text" id="runtime" name="runtime" value="01:00" pattern="[0-9]{2}:[0-9]{2}" title="Format: HH:MM (e.g., 01:30)" required>
         </div>
-        
+
         <div class="form-row checkbox-row">
             <label>
                 <input type="checkbox" id="live_to_break" name="live_to_break" value="TRUE" checked>
                 Live To Break
             </label>
         </div>
-        
+
         <div class="form-row">
             <button type="submit" class="btn">Export Selected to Invintus CSV</button>
         </div>
     </div>
     </form>
-    
-    // Replace the entire script section in your render_meetings_html function with this:
 
     <script>
 function selectAll() {
@@ -639,15 +721,15 @@ function deselectAll() {
 function toggleEncoder(checkbox) {
     var meetingId = checkbox.getAttribute('data-meeting-id');
     var encoderSelect = document.getElementById('encoder-' + meetingId);
-    
+
     if (checkbox.checked) {
         encoderSelect.classList.add('active');
-        
+
         // Set default category as "Gavel Alaska, [Title]"
         var title = checkbox.getAttribute('data-title');
         var meetingValue = checkbox.value;
         var hiddenInput = document.getElementById('category-' + meetingValue);
-        
+
         if (!hiddenInput) {
             hiddenInput = document.createElement('input');
             hiddenInput.type = 'hidden';
@@ -655,12 +737,12 @@ function toggleEncoder(checkbox) {
             hiddenInput.id = 'category-' + meetingValue;
             document.getElementById('invintus-form').appendChild(hiddenInput);
         }
-        
+
         hiddenInput.value = 'Gavel Alaska, ' + title;
     } else {
         encoderSelect.classList.remove('active');
         encoderSelect.value = '';
-        
+
         // Remove category hidden input
         var meetingValue = checkbox.value;
         var hiddenInput = document.getElementById('category-' + meetingValue);
@@ -677,166 +759,157 @@ document.getElementById('invintus-form').onsubmit = function(e) {
         e.preventDefault();
         return false;
     }
-    
+
     // Check if any selected meetings don't have encoders
     var missingEncoders = false;
     var encoderSelects = [];
-    
+
     checkboxes.forEach(function(checkbox) {
         var meetingId = checkbox.getAttribute('data-meeting-id');
         var encoderSelect = document.getElementById('encoder-' + meetingId);
-        
+
         if (!encoderSelect.value) {
             missingEncoders = true;
             encoderSelects.push(encoderSelect);
         }
     });
-    
+
     // If some encoders are missing, show a warning but allow continuing
     if (missingEncoders) {
         // Highlight the missing encoders
         encoderSelects.forEach(function(select) {
             select.style.border = '2px solid orange';
         });
-        
+
         // Ask for confirmation
         if (!confirm('Some meetings are missing encoder selections. These will be exported with blank encoder values. Continue?')) {
             e.preventDefault();
             return false;
         }
     }
-    
+
     return true;
 };
     </script>
     </body>
     </html>
     """
-    
+
     return html
 
 def format_meetings_csv(meetings, include_date=False):
     """Format meetings for standard CSV"""
     output = StringIO()
     writer = csv.writer(output, quoting=csv.QUOTE_ALL)
-    
+
     # Determine fields based on whether we include date
-    fields = ['title', 'status', 'location', 'time', 'bills', 'description']
+    fields = ['title', 'location', 'time', 'bills', 'description']
     if include_date:
         fields.insert(0, 'date')
-    
+
     # Write header
     writer.writerow(fields)
-    
+
     # Process each meeting
     for meeting in meetings:
         # Skip meetings that should be excluded
         if should_skip_event(meeting):
             continue
-        
+
         # Get basic meeting info
         title = build_title(meeting)
         location = meeting.get("Location", "No Location")
-        canceled = meeting.get("MeetingCanceled", False)
-        status = "CANCELED" if canceled else "Active"
-        
+
         # Format time
         time_str = meeting.get("MeetingTime", "")
         date_str = meeting.get("MeetingDate", "")
         formatted_time = ""
-        
+
         if date_str and time_str:
             try:
                 dt = datetime.datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M:%S")
                 formatted_time = dt.strftime("%Y-%m-%d %I:%M %p")
             except ValueError:
                 formatted_time = f"{date_str} {time_str}"
-        
+
         # Get bills with details for description
         bill_details, _ = extract_bills_with_details(meeting)
-        bills_str = ", ".join([item["bill"] for item in bill_details]) if bill_details else ""
-        
-        # Build description for CSV export (exclude streaming info)
-        description = build_description(meeting, for_csv=True)
-        
+        bills_str = ", ".join([format_bill_number(item["bill"])[0] for item in bill_details]) if bill_details else ""
+
+        # Plain-text description for the standard CSV (no HTML, no streaming info)
+        description = build_description(meeting, for_csv=True, as_html=False)
+
         # Build row
-        row = [title, status, location, formatted_time, bills_str, description]
-        
+        row = [title, location, formatted_time, bills_str, description]
+
         # Add date if needed
         if include_date:
             display_date = meeting.get('_display_date', '')
             row.insert(0, display_date)
-        
+
         # Write row
         writer.writerow(row)
-    
+
     return output.getvalue()
 
 def format_meetings_invintus_csv(meetings, encoders, categories, runtime="01:00", live_to_break=True):
     """Format meetings for Invintus CSV export"""
     output = StringIO()
     writer = csv.writer(output, quoting=csv.QUOTE_ALL)
-    
+
     # Write header according to Invintus spec
     writer.writerow(["title", "customID", "startDateTime", "description", "encoder", "category", "location", "estRuntime", "liveToBreak"])
-    
-def format_meetings_invintus_csv(meetings, encoders, categories, runtime="01:00", live_to_break=True):
-    """Format meetings for Invintus CSV export"""
-    output = StringIO()
-    writer = csv.writer(output, quoting=csv.QUOTE_ALL)
-    
-    # Write header according to Invintus spec
-    writer.writerow(["title", "customID", "startDateTime", "description", "encoder", "category", "location", "estRuntime", "liveToBreak"])
-    
+
     # Set default values
     live_to_break_value = "TRUE" if live_to_break else "FALSE"
-    
+
     # Process each meeting
     for meeting in meetings:
         # Skip meetings that should be excluded
         if should_skip_event(meeting):
             continue
-        
+
         # Parse date/time
         date_str = meeting.get("MeetingDate", "")
         time_str = meeting.get("MeetingTime", "")
-        
+
         if not date_str or not time_str:
             continue
-        
+
         try:
             # Format datetime in the required format: YYYY-MM-DD HH:mm:ss
             dt = datetime.datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M:%S")
             start_datetime = dt.strftime("%Y-%m-%d %H:%M:%S")
         except ValueError:
             continue
-        
+
         # Build meeting data for CSV
-        
+
         # 1. Title
         title = build_title(meeting)
-        
+
         # 2. customID (no whitespace)
         custom_id = generate_custom_id(meeting)
-        
+
         # Include all selected meetings, even if no encoder is set
         if custom_id not in encoders:
             continue  # Skip unselected meetings
-        
+
         # 3. startDateTime already formatted above
-        
-        # 4. Description - use for_csv=True to exclude streaming info
-        description = build_description(meeting, for_csv=True)
-        
+
+        # 4. Description - csv_beta.php style HTML, streaming info removed;
+        #    '--' when empty, as the PHP does
+        description = build_description(meeting, for_csv=True) or "--"
+
         # 5. encoder (using selected encoder or empty string if none)
         encoder = encoders[custom_id] if encoders[custom_id] else ""
-        
+
         # 6. category (using custom category for each meeting)
         category = categories.get(custom_id, "Gavel Alaska")
-        
+
         # 7. location
         location = meeting.get("Location", "")
-        
+
         # Write row with all fields
         writer.writerow([
             title,
@@ -849,7 +922,7 @@ def format_meetings_invintus_csv(meetings, encoders, categories, runtime="01:00"
             runtime,
             live_to_break_value
         ])
-    
+
     return output.getvalue()
 
 # Flask routes
@@ -862,10 +935,10 @@ def index():
 def view_meetings():
     """View meetings for a single date"""
     date = request.args.get('date', datetime.datetime.now().strftime("%m/%d/%Y"))
-    
+
     # Get meetings
     meetings_data = get_meetings(date)
-    
+
     # Render HTML
     return render_meetings_html(meetings_data, date)
 
@@ -874,10 +947,10 @@ def view_range():
     """View meetings for a date range"""
     start_date = request.args.get('start_date', datetime.datetime.now().strftime("%m/%d/%Y"))
     end_date = request.args.get('end_date', (datetime.datetime.now() + datetime.timedelta(days=1)).strftime("%m/%d/%Y"))
-    
+
     # Get meetings for the date range
     meetings_by_date = get_meeting_range(start_date, end_date)
-    
+
     # Render HTML
     date_info = {'start': start_date, 'end': end_date}
     return render_meetings_html(meetings_by_date, date_info, True)
@@ -886,16 +959,16 @@ def view_range():
 def export_csv():
     """Export meetings for a single date as CSV"""
     date = request.args.get('date', datetime.datetime.now().strftime("%m/%d/%Y"))
-    
+
     # Get meetings
     meetings_data = get_meetings(date)
-    
+
     if isinstance(meetings_data, dict) and "error" in meetings_data:
         return f"Error: {meetings_data['error']}"
-    
+
     # Format as CSV
     csv_data = format_meetings_csv(meetings_data)
-    
+
     # Return as downloadable file
     return Response(
         csv_data,
@@ -907,22 +980,22 @@ def export_csv():
 def export_csv_range():
     """Export meetings for a date range as CSV"""
     date = request.args.get('date', "")
-    
+
     if " to " in date:
         start_date, end_date = date.split(" to ")
     else:
         start_date = end_date = date
-    
+
     # If we have a single date, use the export_csv endpoint
     if start_date == end_date:
         return export_csv()
-    
+
     # Get meetings for the date range
     meetings_by_date = get_meeting_range(start_date, end_date)
-    
+
     if isinstance(meetings_by_date, dict) and "error" in meetings_by_date:
         return f"Error: {meetings_by_date['error']}"
-    
+
     # Flatten meetings for CSV export
     all_meetings = []
     for date, meetings in meetings_by_date.items():
@@ -931,10 +1004,10 @@ def export_csv_range():
                 # Add date info to each meeting
                 meeting['_display_date'] = date
                 all_meetings.append(meeting)
-    
+
     # Format as CSV with date column
     csv_data = format_meetings_csv(all_meetings, True)
-    
+
     # Return as downloadable file
     return Response(
         csv_data,
@@ -949,39 +1022,37 @@ def export_invintus():
     selected_meetings = request.form.getlist('selected_meetings')
     runtime = request.form.get('runtime', '01:00')
     live_to_break = 'live_to_break' in request.form
-    
+
     if not selected_meetings:
         return "Error: No meetings selected. Please go back and select at least one meeting."
-    
+
     # Get meetings
     meetings_data = get_meetings(date_info)
-    
+
     if isinstance(meetings_data, dict) and "error" in meetings_data:
         return f"Error: {meetings_data['error']}"
-    
-    # Get encoders and categories for each meeting
+
+    # Get encoders and categories for each selected meeting.
+    # Every selected meeting gets an encoders entry (blank if none chosen) so it
+    # is still exported, as the "blank encoder values" warning in the UI promises.
     encoders = {}
     categories = {}
-    
+
     for meeting_id in selected_meetings:
-        # Get encoder
-        encoder_key = f"encoder_{meeting_id}"
-        if encoder_key in request.form and request.form[encoder_key]:
-            encoders[meeting_id] = request.form[encoder_key]
-        
-        # Get category
+        encoders[meeting_id] = request.form.get(f"encoder_{meeting_id}", "")
+
         category_key = f"category_{meeting_id}"
         if category_key in request.form and request.form[category_key]:
             categories[meeting_id] = request.form[category_key]
-    
+
     # Filter to only selected meetings
     filtered_meetings = []
-    
+
     for meeting in meetings_data:
         custom_id = generate_custom_id(meeting)
         if custom_id in selected_meetings:
             filtered_meetings.append(meeting)
-    
+
     # Generate Invintus CSV
     csv_data = format_meetings_invintus_csv(
         filtered_meetings,
@@ -990,7 +1061,7 @@ def export_invintus():
         runtime=runtime,
         live_to_break=live_to_break
     )
-    
+
     # Return as downloadable file
     return Response(
         csv_data,
@@ -1005,31 +1076,27 @@ def export_invintus_range():
     selected_meetings = request.form.getlist('selected_meetings')
     runtime = request.form.get('runtime', '01:00')
     live_to_break = 'live_to_break' in request.form
-    
+
     if not selected_meetings:
         return "Error: No meetings selected. Please go back and select at least one meeting."
-    
+
     # Parse date range
     if " to " in date_info:
         start_date, end_date = date_info.split(" to ")
     else:
         start_date = end_date = date_info
-    
-    # Get encoders and categories for each meeting
+
+    # Get encoders and categories for each selected meeting (blank encoder if none chosen)
     encoders = {}
     categories = {}
-    
+
     for meeting_id in selected_meetings:
-        # Get encoder
-        encoder_key = f"encoder_{meeting_id}"
-        if encoder_key in request.form and request.form[encoder_key]:
-            encoders[meeting_id] = request.form[encoder_key]
-        
-        # Get category
+        encoders[meeting_id] = request.form.get(f"encoder_{meeting_id}", "")
+
         category_key = f"category_{meeting_id}"
         if category_key in request.form and request.form[category_key]:
             categories[meeting_id] = request.form[category_key]
-    
+
     # Get meetings
     if start_date == end_date:
         meetings_data = get_meetings(start_date)
@@ -1040,21 +1107,21 @@ def export_invintus_range():
         meetings_by_date = get_meeting_range(start_date, end_date)
         if isinstance(meetings_by_date, dict) and "error" in meetings_by_date:
             return f"Error: {meetings_by_date['error']}"
-        
+
         # Flatten meetings
         all_meetings = []
         for date, meetings in meetings_by_date.items():
             if isinstance(meetings, list):
                 all_meetings.extend(meetings)
-    
+
     # Filter to only selected meetings
     filtered_meetings = []
-    
+
     for meeting in all_meetings:
         custom_id = generate_custom_id(meeting)
         if custom_id in selected_meetings:
             filtered_meetings.append(meeting)
-    
+
     # Generate Invintus CSV
     csv_data = format_meetings_invintus_csv(
         filtered_meetings,
@@ -1063,12 +1130,12 @@ def export_invintus_range():
         runtime=runtime,
         live_to_break=live_to_break
     )
-    
+
     # Return as downloadable file
     filename = f"invintus_meetings_{start_date.replace('/', '-')}"
     if start_date != end_date:
         filename += f"_to_{end_date.replace('/', '-')}"
-    
+
     return Response(
         csv_data,
         mimetype="text/csv",
@@ -1077,13 +1144,13 @@ def export_invintus_range():
 
 if __name__ == "__main__":
     import argparse
-    
+
     parser = argparse.ArgumentParser(description='Gavel Meeting Exporter')
     parser.add_argument('--port', type=int, default=5027,
                         help='Port to run the web server on (default: 5027)')
-    
+
     args = parser.parse_args()
-    
+
     print(f"Starting web server on port {args.port}...")
     print(f"Access the web interface at http://localhost:{args.port}/")
     app.run(host='0.0.0.0', port=args.port)
